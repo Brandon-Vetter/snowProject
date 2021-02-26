@@ -1,8 +1,9 @@
 #include <Wire.h>
 #include <SPI.h>
+#include "HX711.h"
 #include <Adafruit_Sensor.h>
-//#include <Adafruit_bme280.h>
-#include "DHT.h"
+#include <Adafruit_BME280.h>
+//#include "DHT.h"
 
 #include <Arduino.h>
 
@@ -12,18 +13,23 @@
 #include <MySQL_Connection.h>
 
 
-#define DHTPIN 5
-#define DHTTYPE DHT22
+//#define DHTPIN 5
+//#define DHTTYPE DHT22
 
 int miliSecToSec = 1000000;
 
-DHT dht(DHTPIN, DHTTYPE);
-//Adafruit_bme280 bme;
+//DHT dht(DHTPIN, DHTTYPE);
+Adafruit_BME280 bme;
+HX711 scale;
 
-int humidity;
-int temp;
+uint8_t dataPin = 25;
+uint8_t clockPin = 26;
+
+double humidity;
+double temp;
 int pressure;
-int fsr;
+double fsr;
+double calFsr;
 
 
 const char* ssid = "Snow";
@@ -35,7 +41,7 @@ IPAddress subnet(135,135,135,0);
 WiFiClient client;
 
 MySQL_Connection conn((Client *)&client);
-char INSERT_SQL[] = "INSERT INTO weatherData.weatherData(temp, mass, pressure, humid, Date) VALUES (%d, %d, %d, %d,CURDATE());";
+char INSERT_SQL[] = "INSERT INTO weatherData.weatherData(temp, mass, pressure, humid, Date, time) VALUES (%.2f, %.2f, %d, %.2f, CURDATE(), CURTIME());";
 char query[138];
 IPAddress server_addr(10,42,0,1);
 char user[] = "Ardueno";
@@ -54,13 +60,25 @@ void setup() {
   Serial.println(ssid);
   // WiFi.config(ip, gateway, subnet);
   WiFi.begin(ssid,password);
+  int counter = 0;
   while (WiFi.status() != WL_CONNECTED){
     delay(1000);
     Serial.print(".");
+    if(counter == 10){
+        esp_sleep_enable_timer_wakeup(miliSecToSec * 5);
+        esp_deep_sleep_start();
+    }
+    counter++;
   }
+  counter = 0;
   while (conn.connect(server_addr, 3306, user, pass)!= true){
   delay(200);
   Serial.print(".");
+  if(counter == 10){
+        esp_sleep_enable_timer_wakeup(miliSecToSec * 5);
+        esp_deep_sleep_start();
+    }
+    counter++;
 }
 Serial.println("\nConnected to SQL Server");
 digitalWrite(2, HIGH);
@@ -79,7 +97,8 @@ digitalWrite(13, HIGH);
 delay(100);
 //    while(!status){
   //status = 
-  dht.begin();
+  bme.begin();
+  scale.begin(dataPin, clockPin);
  // if(!status){
 //    Serial.println("Could not start dht280 sensor");
 //    digitalWrite(13, LOW);
@@ -101,12 +120,13 @@ delay(100);
   digitalWrite(2, LOW);
   delay(100);
   }
+ scale.set_scale(127.15);
 }
 
 void loop() {
   digitalWrite(13,HIGH);
   delay(100);
-  while(dht.readTemperature()<-100||dht.readTemperature>1000){
+  while(bme.readTemperature()<-100||bme.readTemperature()>1000||bme.readPressure()==0){
     digitalWrite(13,LOW);
     digitalWrite(2, HIGH);
     delay(500);
@@ -117,17 +137,20 @@ void loop() {
     digitalWrite(2, LOW);
     digitalWrite(13, HIGH);
     Serial.println("sensor not working, attempting restart...");
-    Serial.println(dht.readTemperature());
+    Serial.println(bme.readTemperature());
     digitalWrite(13, HIGH);
     delay(100);
     esp_sleep_enable_timer_wakeup(miliSecToSec * 10);
     esp_deep_sleep_start();
   }
-  fsr = analogRead(34);
+  fsr = scale.get_units(10);
+  //238.4641048082X^0.42419914602406
+  //2.2432605564827 * 1.002430730588^x
+  //0.07234886968438X -37.641671827593
   Serial.println(fsr);
-  humidity = dht.readHumidity();
-  temp = dht.readTemperature();
-//  pressure = dht.readPressure();
+  humidity = bme.readHumidity();
+  temp = bme.readTemperature();
+  pressure = bme.readPressure();//in pascals
   Serial.print("Humidity: ");
   Serial.println(humidity);
   Serial.print("temp in C: ");
@@ -137,12 +160,13 @@ void loop() {
   MySQL_Cursor *SQL = new MySQL_Cursor(&conn);
   sprintf(query, INSERT_SQL, temp, fsr, pressure, humidity);
   SQL->execute(query);
+  Serial.println(query);
   delete SQL;
   digitalWrite(2, HIGH);
   delay(500);
   digitalWrite(2, LOW);
   digitalWrite(13, LOW);
   conn.close();
-  esp_sleep_enable_timer_wakeup(miliSecToSec * 60);
+  esp_sleep_enable_timer_wakeup(miliSecToSec * 5);
   esp_deep_sleep_start();
 }
